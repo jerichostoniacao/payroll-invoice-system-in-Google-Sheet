@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      select, button {
+        width: 100%;
+        padding: 6px;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <label><b>Select Employee:</b></label>
+    <select id="employee" onchange="loadCutoffs()"></select>
+
+    <label><b>Select Cutoff Period:</b></label>
+    <select id="cutoff"></select>
+
+    <button onclick="resendInvoice()">Resend Invoice</button>
+    <p id="status" style="color: green;"></p>
+
+    <script>
+      let dataMap = {};
+
+      function loadData() {
+        google.script.run.withSuccessHandler(populateEmployees).getResendData();
+      }
+
+      function populateEmployees(data) {
+        dataMap = data;
+        const employeeSelect = document.getElementById("employee");
+        employeeSelect.innerHTML = "";
+
+        Object.keys(data).forEach(name => {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          employeeSelect.appendChild(option);
+        });
+
+        loadCutoffs();
+      }
+
+      function loadCutoffs() {
+        const employee = document.getElementById("employee").value;
+        const cutoffSelect = document.getElementById("cutoff");
+        cutoffSelect.innerHTML = "";
+
+        (dataMap[employee] || []).forEach(cutoff => {
+          const option = document.createElement("option");
+          option.value = cutoff;
+          option.textContent = cutoff;
+          cutoffSelect.appendChild(option);
+        });
+      }
+
+      function resendInvoice() {
+        const employee = document.getElementById("employee").value;
+        const cutoff = document.getElementById("cutoff").value;
+
+        document.getElementById("status").textContent = "Processing...";
+
+        google.script.run.withSuccessHandler(response => {
+          document.getElementById("status").textContent = response;
+        }).resendInvoiceFromUI(employee, cutoff);
+      }
+
+      loadData();
+    </script>
+  </body>
+</html>

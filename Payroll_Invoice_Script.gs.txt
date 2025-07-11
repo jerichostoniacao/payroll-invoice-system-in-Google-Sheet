@@ -1,0 +1,194 @@
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Payroll Automation')
+    .addItem('Generate & Email Invoices', 'generateInvoices')
+    .addItem('Generate Drafts and Email Invoices', 'generateDraftInvoices')
+    .addItem('Resend Invoice', 'resendInvoice')
+    .addToUi();
+}
+
+function generateDraftInvoices() {
+  generateInvoices(true);
+}
+
+function generateInvoices(draftOnly = false) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dataSheet = ss.getSheetByName("PayrollData");
+  const templateSheet = ss.getSheetByName("Invoice Template");
+  const data = dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, 8).getValues();
+
+  const rootFolderId = "10NUQf5haYW_gaXXvLnuIMT9rn_okRiGe"; // 🔁 Replace this
+  const confirmationLink = "https://docs.google.com/forms/d/1QH2pVelhggdEMuZ9DJeCNnq7i050X6KkC2aeShs5Pvs/edit"; // 🔁 Replace this
+  const rootFolder = DriveApp.getFolderById(rootFolderId);
+
+  data.forEach(row => {
+    const [name, email, address, cutoff, regular, ot, bonus, total] = row;
+
+    const initials = name
+      .split(" ")
+      .map(part => part[0])
+      .join("")
+      .toUpperCase();
+    const today = new Date();
+    const formattedDate = Utilities.formatDate(today, ss.getSpreadsheetTimeZone(), "MMddyyyy");
+    const invoiceNumber = `${initials}-${formattedDate}`;
+
+    const newSheet = templateSheet.copyTo(ss);
+    ss.setActiveSheet(newSheet);
+    const sheetName = `${name} - ${cutoff}`;
+    newSheet.setName(sheetName);
+
+    const range = newSheet.getDataRange();
+    const values = range.getValues().map(r =>
+      r.map(cell => {
+        return cell
+          .toString()
+          .replaceAll("{{Name}}", name)
+          .replaceAll("{{Address}}", address)
+          .replaceAll("{{Date}}", Utilities.formatDate(today, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy"))
+          .replaceAll("{{Cutoff}}", cutoff)
+          .replaceAll("{{Pay}}", formatCurrency(regular))
+          .replaceAll("{{OT}}", formatCurrency(ot))
+          .replaceAll("{{Bonus}}", formatCurrency(bonus))
+          .replaceAll("{{Total}}", formatCurrency(total))
+          .replaceAll("{{InvoiceNumber}}", invoiceNumber);
+      })
+    );
+    range.setValues(values);
+    SpreadsheetApp.flush();
+
+    const pdfBlob = createSheetPDF(ss, newSheet);
+    pdfBlob.setName(`Invoice-${invoiceNumber}.pdf`);
+
+    const employeeFolders = rootFolder.getFoldersByName(name);
+    const employeeFolder = employeeFolders.hasNext() ? employeeFolders.next() : rootFolder.createFolder(name);
+
+    if (!draftOnly) {
+      employeeFolder.createFile(pdfBlob);
+    }
+
+    if (email) {
+      const subject = `Payroll Invoice - ${cutoff} ${draftOnly ? "(DRAFT)" : ""}`;
+      const body = `Hello ${name},\n\nPlease find attached your payroll invoice for the period ${cutoff}.\n\n` +
+        (draftOnly
+          ? `⚠️ This is a DRAFT invoice. Kindly review and confirm if everything is correct using the link below:\n` +
+            `🔗 Confirmation Form: ${confirmationLink}\n\n`
+          : "") +
+        `Thank you!\n\n- USA Wholesale Payroll`;
+
+      GmailApp.sendEmail(email, subject, body, {
+        attachments: [pdfBlob],
+        name: "USA Wholesale Payroll"
+      });
+    }
+
+    const status = draftOnly ? "Draft Sent" : "Invoice Sent";
+    logInvoice(name, email, invoiceNumber, cutoff, total, status);
+
+    ss.deleteSheet(newSheet);
+  });
+
+  SpreadsheetApp.getUi().alert("Invoices generated" + (draftOnly ? " as draft only and emailed!" : " and emailed!"));
+}
+
+function resendInvoice() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const logSheet = ss.getSheetByName("Invoice Log");
+  if (!logSheet) {
+    ui.alert("Invoice Log sheet not found.");
+    return;
+  }
+
+  const logData = logSheet.getDataRange().getValues();
+  const names = [...new Set(logData.slice(1).map(row => row[1]))];
+  const cutoffs = [...new Set(logData.slice(1).map(row => row[4]))];
+
+  const namePrompt = ui.prompt("Resend Invoice", "Enter full name (" + names.join(", ") + "):", ui.ButtonSet.OK_CANCEL);
+  if (namePrompt.getSelectedButton() !== ui.Button.OK) return;
+  const name = namePrompt.getResponseText().trim();
+
+  const cutoffPrompt = ui.prompt("Enter cutoff period (" + cutoffs.join(", ") + "):", ui.ButtonSet.OK_CANCEL);
+  if (cutoffPrompt.getSelectedButton() !== ui.Button.OK) return;
+  const cutoff = cutoffPrompt.getResponseText().trim();
+
+  const dataSheet = ss.getSheetByName("PayrollData");
+  const templateSheet = ss.getSheetByName("Invoice Template");
+  const data = dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, 8).getValues();
+
+  const match = data.find(row => row[0] === name && row[3] === cutoff);
+  if (!match) {
+    ui.alert("No matching record found for that name and cutoff.");
+    return;
+  }
+
+  const [skip1, email, address, skip2, regular, ot, bonus, total] = match;
+  const initials = name.split(" ").map(p => p[0]).join("").toUpperCase();
+  const today = new Date();
+  const formattedDate = Utilities.formatDate(today, ss.getSpreadsheetTimeZone(), "MMddyyyy");
+  const invoiceNumber = `${initials}-${formattedDate}`;
+
+  const newSheet = templateSheet.copyTo(ss);
+  ss.setActiveSheet(newSheet);
+  const sheetName = `${name} - ${cutoff}`;
+  newSheet.setName(sheetName);
+
+  const range = newSheet.getDataRange();
+  const values = range.getValues().map(r =>
+    r.map(cell => {
+      return cell
+        .toString()
+        .replaceAll("{{Name}}", name)
+        .replaceAll("{{Address}}", address)
+        .replaceAll("{{Date}}", Utilities.formatDate(today, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy"))
+        .replaceAll("{{Cutoff}}", cutoff)
+        .replaceAll("{{Pay}}", formatCurrency(regular))
+        .replaceAll("{{OT}}", formatCurrency(ot))
+        .replaceAll("{{Bonus}}", formatCurrency(bonus))
+        .replaceAll("{{Total}}", formatCurrency(total))
+        .replaceAll("{{InvoiceNumber}}", invoiceNumber);
+    })
+  );
+  range.setValues(values);
+  SpreadsheetApp.flush();
+
+  const pdfBlob = createSheetPDF(ss, newSheet);
+  pdfBlob.setName(`Invoice-${invoiceNumber}.pdf`);
+
+  GmailApp.sendEmail(email, `Payroll Invoice - ${cutoff} (RESEND)`, `Hello ${name},\n\nHere is a resend of your payroll invoice for the period ${cutoff}.\n\nThank you!\n\n- USA Wholesale Payroll`, {
+    attachments: [pdfBlob],
+    name: "USA Wholesale Payroll"
+  });
+
+  ss.deleteSheet(newSheet);
+  ui.alert("Invoice resent to " + name + " for " + cutoff + ".");
+}
+
+function formatCurrency(value) {
+  const amount = Number(value).toFixed(2);
+  return "$" + amount;
+}
+
+function createSheetPDF(spreadsheet, sheet) {
+  const sheetId = sheet.getSheetId();
+  const url = `${spreadsheet.getUrl().replace(/edit$/, '')}export?format=pdf&exportFormat=pdf&gid=${sheetId}&portrait=true&fitw=true&top_margin=0.5&bottom_margin=0.5&left_margin=0.5&right_margin=0.5&sheetnames=false&printtitle=false&pagenumbers=false&gridlines=false`;
+
+  const token = ScriptApp.getOAuthToken();
+  const response = UrlFetchApp.fetch(url, {
+    headers: {
+      'Authorization': 'Bearer ' + token
+    }
+  });
+
+  return response.getBlob();
+}
+
+function logInvoice(name, email, invoiceNumber, cutoff, total, status) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let logSheet = ss.getSheetByName("Invoice Log");
+  if (!logSheet) {
+    logSheet = ss.insertSheet("Invoice Log");
+    logSheet.appendRow(["Timestamp", "Name", "Email", "Invoice #", "Cutoff", "Total", "Status"]);
+  }
+  logSheet.appendRow([new Date(), name, email, invoiceNumber, cutoff, total, status]);
+}
